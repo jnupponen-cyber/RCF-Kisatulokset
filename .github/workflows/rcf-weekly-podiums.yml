@@ -1,52 +1,50 @@
 name: RCF Weekly Podiums
 
 on:
-  workflow_dispatch:       # Manuaalinen käynnistys
   schedule:
-    - cron: "0 17 * * 0"   # Sunnuntai 17:00 UTC = klo 20:00 Suomessa (kesäaika)
-
-permissions:
-  contents: write
+    - cron: "0 17 * * 0"   # Sunnuntai klo 20 Suomen aikaa (17 UTC)
+  workflow_dispatch:       # Manuaalinen ajo GitHubista
 
 jobs:
-  run:
+  weekly:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: rcf-discord-news   # Missä weekly_podiums.py sijaitsee
+        working-directory: rcf-discord-news
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then
-            pip install -r requirements.txt
-          elif [ -f ../requirements.txt ]; then
-            pip install -r ../requirements.txt
-          else
-            pip install requests beautifulsoup4
-          fi
+        run: pip install requests beautifulsoup4
 
-      - name: Run weekly podiums script
+      - name: Run podium bot
         env:
-          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           ZWIFTPOWER_COOKIE: ${{ secrets.ZWIFTPOWER_COOKIE }}
-          ZWIFTPOWER_TEAM_ID: "20561"
-          DEBUG: "1"   # halutessasi poista tai vaihda "0"
-        run: |
-          python weekly_podiums.py
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          ZWIFTPOWER_TEAM_ID: "20561"   # vaihda jos testaat eri tiimillä
+          DEBUG: "1"                    # tallettaa last_team_page.html
+          ALWAYS_POST: "1"              # pakottaa viestin testissä
+        run: python weekly_podiums.py
 
-      - name: Commit weekly_seen.json if changed
+      - name: Show HTML head and tail
+        if: always()
         run: |
-          if [[ -n "$(git status --porcelain weekly_seen.json)" ]]; then
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add weekly_seen.json
-            git commit -m "chore: update weekly_seen.json [skip ci]" || true
-            git push
-          else
-            echo "No changes to commit"
-          fi
+          echo "----- HEAD OF HTML -----"
+          head -n 80 last_team_page.html || true
+          echo "----- TAIL OF HTML -----"
+          tail -n 80 last_team_page.html || true
+
+      - name: Upload debug HTML
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: last_team_page
+          path: last_team_page.html
+          if-no-files-found: ignore
