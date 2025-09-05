@@ -37,8 +37,8 @@ REQUEST_TIMEOUT = 20
 TEAM_ID = os.environ.get("ZWIFTPOWER_TEAM_ID", "20561").strip()
 WEBHOOK = os.environ.get("DISCORD_WEBHOOK_URL", "").strip()
 COOKIE = os.environ.get("ZWIFTPOWER_COOKIE", "").strip()
-DEBUG = os.environ.get("DEBUG", "0") == "1"
-ALWAYS_POST = os.environ.get("ALWAYS_POST", "0") == "1"
+DEBUG = os.environ.get("DEBUG", "1") == "1"
+ALWAYS_POST = os.environ.get("ALWAYS_POST", "1") == "1"
 
 BASE = "https://zwiftpower.com"
 TEAM_URL = f"{BASE}/team.php?id={TEAM_ID}"
@@ -60,9 +60,9 @@ WISHES = [
     "The difference between try and triumph is just a little umph! 💥",
     "Winning isn’t everything; it’s the only thing. 😎",
     "And that’s how you do it, folks! 🔥",
-    "Well, nobody’s perfect. 🙃"
-    "I guess practice does make perfect! 📈"
-    "We are the champions, my friends! 🏆"
+    "Well, nobody’s perfect. 🙃",
+    "I guess practice does make perfect! 📈",
+    "We are the champions, my friends! 🏆",
     "Second place is just the first loser. 😏",
     "Go hard or go home... well, see you at home then! 🛋️",
     "If you can’t win fair, draft better! 🚴‍♂️💨",
