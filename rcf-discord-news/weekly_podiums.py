@@ -6,14 +6,13 @@ RCF weekly podiums (ZwiftPower) -> Discord
 - Hakee RCF-tiimin (ZwiftPower) tuoreet tulokset viimeisen 7 päivän ajalta
 - Suodattaa podium-sijat (1–3), ryhmittelee kisakohtaisesti
 - Postaa sunnuntai-iltana yhteenvedon Discordiin
-- Pitää "weekly_seen.json" -tiedostoa, ettei samoja podiumeja posteta uudelleen
+- Pitää "weekly_seen.json" -tiedostoa, ettei samoja podiumeja postata uudelleen
 - DEBUG-moodi ja selkeä virheilmoitus, jos cookie ohjaa login-sivulle
 - ALWAYS_POST=1: tekee testipostauksen, vaikka podiumeja ei löytyisi
 - IGNORE-LISTA: suodata tietyt nimet pois (ignore_list.json)
 - EMOJIT: 🥇🥈🥉 podium-sijoituksiin
 - OTSIKON PÄIVÄMÄÄRÄVÄLI: esim. "1.–7. syyskuuta 2025" (Helsingin aika)
-- SATUNNAINEN ONNENTOIVOTUS
-- VAIN KISAT: Haetaan event-tyyppi tapahtumasivulta ja suodatetaan (Race/TT)
+- SATUNNAINEN ONNENTOIVOTUS: lisätään viestin loppuun
 """
 
 from __future__ import annotations
@@ -22,7 +21,6 @@ import os
 import re
 import json
 import random
-import time
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from pathlib import Path
@@ -34,7 +32,6 @@ from bs4 import BeautifulSoup
 # --- Asetukset / polut ---
 SCRIPT_DIR = Path(__file__).resolve().parent
 STATE_FILE = SCRIPT_DIR / "weekly_seen.json"
-EVENT_TYPE_CACHE_FILE = SCRIPT_DIR / "event_type_cache.json"
 REQUEST_TIMEOUT = 20
 
 TEAM_ID = os.environ.get("ZWIFTPOWER_TEAM_ID", "20561").strip()
@@ -53,38 +50,34 @@ FI_MONTHS_GEN = [
     "kesäkuuta", "heinäkuuta", "elokuuta", "syyskuuta", "lokakuuta", "marraskuuta", "joulukuuta"
 ]
 
-# Satunnaiset onnentoivotukset
 WISHES = [
     "Hyvää treeniviikkoa kaikille! 🚴‍♂️💨",
-    "Onnea podium-sijoittajille – ja tsemppiä ensi viikkoon! 🔥",
-    "Hienoa ajoa, jatketaan samaan malliin! 👏",
+    "Onnea podium-sijoituksista ja tsemppiä ensi viikkoon! 🔥",
+    "Hienoa, jatketaan samaan malliin! 👏",
     "Respect kaikille RCF-kuskeille, podiumilla tai ei 💙",
-    "Muistakaa nauttia ajamisesta – kisat jatkuu taas ensi viikolla! 🚴‍♀️🌟",
-    "Kova työ palkitaan – pidetään polkimet pyörimässä! 💪",
-    "Yhdessä ajetaan pidemmälle – kiitos kaikille mukana olleille! 🤝",
-    "Mahtava meininki, jatketaan treenejä hyvällä fiiliksellä! 😎",
-    "Uudet kisat, uudet mahdollisuudet – kohti seuraavaa podiumia! 🏁",
-    "Pidetään pyöräily iloisena ja yhteisöllisenä – hyvä RCF! 🎉",
+    "Hienosti meni! 🚴‍♀️🌟",
+    "Tärkeintä ei ole voitto, vaan murskavoitto! 💪",
     "The difference between try and triumph is just a little umph! 💥",
-    "Well, nobody’s perfect. 🙃",
-    "And that’s how you do it, folks! 🎤",
-    "I guess practice does make perfect! 📈",
-    "We are the champions, my friends! 🏆",
-    "A win-win situation — for me, at least! 😏",
+    "Winning isn’t everything; it’s the only thing. 😎",
+    "And that’s how you do it, folks! 🔥",
+    "Well, nobody’s perfect. 🙃"
+    "I guess practice does make perfect! 📈"
+    "We are the champions, my friends! 🏆"
+    "Second place is just the first loser. 😏",
+    "Go hard or go home... well, see you at home then! 🛋️",
+    "If you can’t win fair, draft better! 🚴‍♂️💨",
+    "Podium today, excuses tomorrow. 🤷",
+    "Winning isn’t everything… it’s just highly recommended. 😉",
+    "No watts, no glory. ⚡",
+    "It’s not about how you start, it’s about how you blame the trainer. 🔧",
+    "Legs are temporary, pride is permanent. 💪",
+    "Why ride smart when you can ride hard? 🤔"
 ]
-
-# Event-tyypit: mitä sallitaan ja mitä ei
-ALLOWED_EVENT_TYPES = {
-    "race", "time trial", "tt", "road race", "criterium", "crit", "scratch"
-}
-DENY_EVENT_TYPES = {
-    "group ride", "workout", "group workout", "training", "pace partner",
-    "social ride", "fondo", "tour", "badge hunt"
-}
 
 def logd(*a):
     if DEBUG:
         print("[DEBUG]", *a)
+
 
 def load_seen() -> Set[str]:
     if STATE_FILE.exists():
@@ -95,6 +88,7 @@ def load_seen() -> Set[str]:
             print(f"[WARN] Failed to read {STATE_FILE.name}: {e}")
     return set()
 
+
 def save_seen(s: Set[str]) -> None:
     try:
         STATE_FILE.write_text(
@@ -103,6 +97,7 @@ def save_seen(s: Set[str]) -> None:
         )
     except Exception as e:
         print(f"[WARN] Failed to write {STATE_FILE.name}: {e}")
+
 
 def load_ignore_names(path: Path = SCRIPT_DIR / "ignore_list.json") -> Set[str]:
     try:
@@ -113,6 +108,7 @@ def load_ignore_names(path: Path = SCRIPT_DIR / "ignore_list.json") -> Set[str]:
     except Exception as e:
         print(f"[WARN] Failed to load ignore_list.json: {e}")
     return set()
+
 
 def fetch(url: str) -> Optional[str]:
     headers = {
@@ -137,7 +133,7 @@ def fetch(url: str) -> Optional[str]:
         print("[ERROR] ZwiftPower returned login page -> cookie invalid/expired.")
         return None
 
-    if DEBUG and "team.php" in url:
+    if DEBUG:
         try:
             (SCRIPT_DIR / "last_team_page.html").write_text(text, encoding="utf-8")
             logd("Saved last_team_page.html for inspection.")
@@ -145,6 +141,7 @@ def fetch(url: str) -> Optional[str]:
             print(f"[WARN] Could not write last_team_page.html: {e}")
 
     return text
+
 
 def parse_team_results(html: str) -> List[Dict]:
     soup = BeautifulSoup(html, "html.parser")
@@ -222,6 +219,7 @@ def parse_team_results(html: str) -> List[Dict]:
 
     return results
 
+
 def format_finnish_date_range(start_date, end_date) -> str:
     if start_date.year == end_date.year:
         if start_date.month == end_date.month:
@@ -236,93 +234,6 @@ def format_finnish_date_range(start_date, end_date) -> str:
         m2 = FI_MONTHS_GEN[end_date.month]
         return f"{start_date.day}. {m1} {start_date.year} – {end_date.day}. {m2} {end_date.year}"
 
-# --- Event type detection & cache ---
-
-def _load_event_type_cache() -> Dict[str, str]:
-    if EVENT_TYPE_CACHE_FILE.exists():
-        try:
-            return json.loads(EVENT_TYPE_CACHE_FILE.read_text(encoding="utf-8"))
-        except Exception as e:
-            print(f"[WARN] Failed to read {EVENT_TYPE_CACHE_FILE.name}: {e}")
-    return {}
-
-def _save_event_type_cache(cache: Dict[str, str]) -> None:
-    try:
-        EVENT_TYPE_CACHE_FILE.write_text(json.dumps(cache, ensure_ascii=False, indent=2), encoding="utf-8")
-    except Exception as e:
-        print(f"[WARN] Failed to write {EVENT_TYPE_CACHE_FILE.name}: {e}")
-
-def _normalize_event_type(text: str) -> str:
-    t = text.strip().lower()
-    # yhtenäistä yleisiä muotoja
-    t = t.replace("time-trial", "time trial")
-    t = t.replace("tt race", "time trial")
-    return t
-
-def detect_event_type_from_html(html: str) -> str:
-    """
-    Yrittää päätellä tapahtuman tyypin sivun tekstistä.
-    Palauttaa esim. 'race', 'time trial', 'group ride', 'workout', 'fondo', 'tour', 'unknown'
-    """
-    txt = BeautifulSoup(html, "html.parser").get_text(" ", strip=True).lower()
-
-    # Ensisijaiset kiellot
-    for kw in DENY_EVENT_TYPES:
-        if kw in txt:
-            return kw
-
-    # Sallitut / kisat
-    if "time trial" in txt or re.search(r"\btt\b", txt):
-        return "time trial"
-    if "criterium" in txt or "crit" in txt:
-        return "crit"
-    if "race" in txt or "road race" in txt or "scratch" in txt:
-        return "race"
-
-    # Muita yleisiä
-    if "group ride" in txt or "social ride" in txt:
-        return "group ride"
-    if "workout" in txt or "group workout" in txt or "training" in txt:
-        return "workout"
-    if "pace partner" in txt:
-        return "pace partner"
-    if "fondo" in txt:
-        return "fondo"
-    if "tour" in txt:
-        return "tour"
-    if "badge hunt" in txt:
-        return "badge hunt"
-
-    return "unknown"
-
-def get_event_type(ev_link: str, cache: Dict[str, str]) -> str:
-    """
-    Palauttaa normalized event-tyypin välimuistista tai hakee sivun.
-    """
-    if ev_link in cache:
-        return cache[ev_link]
-
-    html = fetch(ev_link)
-    if not html:
-        etype = "unknown"
-    else:
-        etype = detect_event_type_from_html(html)
-
-    etype = _normalize_event_type(etype)
-    cache[ev_link] = etype
-    logd(f"event type: {etype} <- {ev_link}")
-    return etype
-
-def is_allowed_event_type(etype: str) -> bool:
-    e = _normalize_event_type(etype)
-    if e in DENY_EVENT_TYPES:
-        return False
-    if e in ALLOWED_EVENT_TYPES:
-        return True
-    # If unknown, be conservative -> do NOT include
-    return False
-
-# --- Discord build & post ---
 
 def build_discord_embed(podiums: List[Dict]) -> Dict:
     by_event: Dict[Tuple[str, str], List[Dict]] = {}
@@ -360,6 +271,7 @@ def build_discord_embed(podiums: List[Dict]) -> Dict:
     }
     return embed
 
+
 def post_to_discord(embed: Dict) -> None:
     if not WEBHOOK:
         raise RuntimeError("DISCORD_WEBHOOK_URL puuttuu.")
@@ -368,7 +280,6 @@ def post_to_discord(embed: Dict) -> None:
     if r.status_code >= 300:
         raise RuntimeError(f"Discord POST failed: {r.status_code} {r.text}")
 
-# --- Main ---
 
 def main() -> None:
     if not COOKIE:
@@ -391,14 +302,8 @@ def main() -> None:
     if DEBUG:
         logd("ignore_names:", sorted(ignore_names))
 
-    # Lataa event-tyyppien välimuisti
-    etype_cache = _load_event_type_cache()
-
     podiums: List[Dict] = []
     new_ids: Set[str] = set()
-
-    # Muista jo tarkistetut event-linkit -> vähentää kutsuja
-    checked_event_types: Dict[str, str] = {}
 
     for r in all_results:
         if r["date"] < week_ago:
@@ -408,28 +313,14 @@ def main() -> None:
         if r["rider"] in ignore_names:
             continue
 
-        # Tarkista event-tyyppi vain kerran per linkki
-        ev_link = r["link"]
-        etype = checked_event_types.get(ev_link)
-        if not etype:
-            etype = get_event_type(ev_link, etype_cache)
-            checked_event_types[ev_link] = etype
-
-        if not is_allowed_event_type(etype):
-            logd(f"skip non-race event type '{etype}' for {ev_link}")
-            continue
-
-        uid = f"{ev_link}|{r['rider']}|{r['pos']}|{r['date'].isoformat()}"
+        uid = f"{r['link']}|{r['rider']}|{r['pos']}|{r['date'].isoformat()}"
         if uid in seen:
             continue
 
         podiums.append(r)
         new_ids.add(uid)
 
-    # Tallenna mahdollisesti päivittynyt välimuisti
-    _save_event_type_cache(etype_cache)
-
-    logd("weekly podiums (races only):", len(podiums))
+    logd("weekly podiums:", len(podiums))
 
     if podiums or ALWAYS_POST:
         embed = build_discord_embed(podiums)
