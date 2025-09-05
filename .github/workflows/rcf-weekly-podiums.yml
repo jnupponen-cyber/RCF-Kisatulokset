@@ -2,8 +2,9 @@ name: RCF Weekly Podiums
 
 on:
   schedule:
-    - cron: "0 17 * * 0"   # Sunnuntai klo 20 Suomen aikaa (17 UTC)
-  workflow_dispatch:       # Manuaalinen ajo GitHubista
+    # Sunnuntai klo 20:00 Suomen aikaa = 17:00 UTC
+    - cron: "0 17 * * 0"
+  workflow_dispatch: {}   # Manuaalinen ajo
 
 jobs:
   weekly:
@@ -26,25 +27,29 @@ jobs:
 
       - name: Run podium bot
         env:
+          # ZwiftPowerin istuntocookie ja Discord-webhook talletetaan secreteinä
           ZWIFTPOWER_COOKIE: ${{ secrets.ZWIFTPOWER_COOKIE }}
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-          ZWIFTPOWER_TEAM_ID: "20561"   # vaihda jos testaat eri tiimillä
-          DEBUG: "1"                    # tallettaa last_team_page.html
-          ALWAYS_POST: "1"              # pakottaa viestin testissä
+          # Vaihda tarvittaessa testiin eri tiimi
+          ZWIFTPOWER_TEAM_ID: "20561"
+          # Debug päälle -> tallentaa last_team_page.html
+          DEBUG: "1"
+          # Testissä voit asettaa 0 jos et halua väkisin postausta
+          ALWAYS_POST: "1"
         run: python weekly_podiums.py
 
       - name: Show HTML head and tail
         if: always()
         run: |
           echo "----- HEAD OF HTML -----"
-          head -n 80 last_team_page.html || true
+          head -n 80 rcf-discord-news/last_team_page.html || true
           echo "----- TAIL OF HTML -----"
-          tail -n 80 last_team_page.html || true
+          tail -n 80 rcf-discord-news/last_team_page.html || true
 
       - name: Upload debug HTML
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: last_team_page
-          path: last_team_page.html
+          path: rcf-discord-news/last_team_page.html
           if-no-files-found: ignore
