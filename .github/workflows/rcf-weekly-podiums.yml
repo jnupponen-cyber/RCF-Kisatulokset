@@ -50,3 +50,12 @@ jobs:
           else
             echo "No changes to commit"
           fi
+
+# .github/workflows/rcf-weekly-podiums.yml
+
+- name: Webhook smoke test
+  env:
+    DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+  run: |
+    curl -sS -X POST -H "Content-Type: application/json" \
+      -d '{"content":"RCF Weekly Podiums: webhook OK ✅ (smoke test)"}' "$DISCORD_WEBHOOK_URL"
