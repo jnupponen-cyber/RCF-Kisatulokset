@@ -1,1 +1,33 @@
+name: RCF Weekly Podiums
+
+on:
+  workflow_dispatch:       # Manuaalinen käynnistys
+  schedule:
+    - cron: "0 17 * * 0"   # Sunnuntai klo 17:00 UTC = klo 20:00 Suomen aikaa (kesäaika)
+
+permissions:
+  contents: write
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: rcf-discord-news   # Missä weekly_podiums.py sijaitsee
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run weekly podiums script
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          ZWIFTPOWER_COOKIE: ${{ secrets.ZWIFTPOWER_COOKIE }}
+        run: |
+          python weekly_podiums.py
 
