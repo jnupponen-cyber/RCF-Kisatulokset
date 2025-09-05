@@ -3,7 +3,7 @@ name: RCF Weekly Podiums
 on:
   workflow_dispatch:       # Manuaalinen käynnistys
   schedule:
-    - cron: "0 17 * * 0"   # Sunnuntai klo 17:00 UTC = klo 20:00 Suomen aikaa (kesäaika)
+    - cron: "0 17 * * 0"   # Sunnuntai 20:00 Suomen aikaa (kesäaika), cron on UTC
 
 permissions:
   contents: write
@@ -13,27 +13,40 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: rcf-discord-news   # Missä weekly_podiums.py sijaitsee
+        working-directory: rcf-discord-news
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-- name: Install dependencies
-  run: |
-    python -m pip install --upgrade pip
-    if [ -f requirements.txt ]; then
-      pip install -r requirements.txt
-    elif [ -f ../requirements.txt ]; then
-      pip install -r ../requirements.txt
-    else
-      # weekly_podiums.py tarvitsee nämä:
-      pip install requests beautifulsoup4
-    fi
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          elif [ -f ../requirements.txt ]; then
+            pip install -r ../requirements.txt
+          else
+            pip install requests beautifulsoup4
+          fi
 
       - name: Run weekly podiums script
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           ZWIFTPOWER_COOKIE: ${{ secrets.ZWIFTPOWER_COOKIE }}
+          ZWIFTPOWER_TEAM_ID: "20561"
+          DEBUG: "1"
         run: |
           python weekly_podiums.py
+
+      - name: Commit weekly_seen.json if changed
+        run: |
+          if [[ -n "$(git status --porcelain weekly_seen.json)" ]]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add weekly_seen.json
+            git commit -m "chore: update weekly_seen.json [skip ci]" || true
+            git push
+          else
+            echo "No changes to commit"
+          fi
