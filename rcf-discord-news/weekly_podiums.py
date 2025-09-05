@@ -6,10 +6,11 @@ RCF weekly podiums (ZwiftPower) -> Discord
 - Hakee RCF-tiimin (ZwiftPower) tuoreet tulokset viimeisen 7 päivän ajalta
 - Suodattaa podium-sijat (1–3), ryhmittelee kisakohtaisesti
 - Postaa sunnuntai-iltana yhteenvedon Discordiin
-- Pitää "weekly_seen.json" -tiedostoa, ettei samoja podiumeja postata uudelleen
+- Pitää "weekly_seen.json" -tiedostoa, ettei samoja podiumeja posteta uudelleen
 - DEBUG-moodi ja selkeä virheilmoitus, jos cookie ohjaa login-sivulle
 - ALWAYS_POST=1: tekee testipostauksen, vaikka podiumeja ei löytyisi
 - IGNORE-LISTA: suodata tietyt nimet pois (ignore_list.json)
+- EMOJIT: 🥇🥈🥉 podium-sijoituksiin
 
 ENV (GitHub Actions → Secrets / env):
   DISCORD_WEBHOOK_URL  (pakollinen)
@@ -224,10 +225,14 @@ def build_discord_embed(podiums: List[Dict]) -> Dict:
     for r in podiums:
         by_event.setdefault((r["event"], r["link"]), []).append(r)
 
+    medals = {1: "🥇", 2: "🥈", 3: "🥉"}
     lines: List[str] = []
     for (ename, elink), items in sorted(by_event.items(), key=lambda x: x[0][0].lower()):
         items_sorted = sorted(items, key=lambda r: r["pos"])
-        row = "\n".join([f"#{it['pos']} — {it['rider']} (Cat {it['category']})" for it in items_sorted])
+        row = "\n".join([
+            f"{medals.get(it['pos'], f'#{it['pos']}')} — {it['rider']} (Cat {it['category']})"
+            for it in items_sorted
+        ])
         lines.append(f"**[{ename}]({elink})**\n{row}")
 
     if lines:
