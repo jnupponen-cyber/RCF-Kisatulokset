@@ -11,6 +11,7 @@ RCF weekly podiums (ZwiftPower) -> Discord
 - ALWAYS_POST=1: tekee testipostauksen, vaikka podiumeja ei löytyisi
 - IGNORE-LISTA: suodata tietyt nimet pois (ignore_list.json)
 - EMOJIT: 🥇🥈🥉 podium-sijoituksiin
+- OTSIKON PÄIVÄMÄÄRÄVÄLI: esim. "1.–7. syyskuuta 2025" (Helsingin aika)
 
 ENV (GitHub Actions → Secrets / env):
   DISCORD_WEBHOOK_URL  (pakollinen)
@@ -26,6 +27,7 @@ import os
 import re
 import json
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from pathlib import Path
 from typing import List, Dict, Set, Tuple, Optional
 
@@ -45,6 +47,13 @@ ALWAYS_POST = os.environ.get("ALWAYS_POST", "0") == "1"
 
 BASE = "https://zwiftpower.com"
 TEAM_URL = f"{BASE}/team.php?id={TEAM_ID}"
+TZ_HKI = ZoneInfo("Europe/Helsinki")
+
+# Kuukaudet suomeksi genetiivissä (1-indeksoitu)
+FI_MONTHS_GEN = [
+    "", "tammikuuta", "helmikuuta", "maaliskuuta", "huhtikuuta", "toukokuuta",
+    "kesäkuuta", "heinäkuuta", "elokuuta", "syyskuuta", "lokakuuta", "marraskuuta", "joulukuuta"
+]
 
 
 def logd(*a):
@@ -139,7 +148,6 @@ def parse_team_results(html: str) -> List[Dict]:
     soup = BeautifulSoup(html, "html.parser")
     results: List[Dict] = []
 
-    # Yritetään löytää kaikki taulukot, joissa voisi olla tulosrivejä
     tables = soup.find_all("table")
     for tbl in tables:
         rows = tbl.find_all("tr")
@@ -219,6 +227,23 @@ def parse_team_results(html: str) -> List[Dict]:
     return results
 
 
+def format_finnish_date_range(start_date, end_date) -> str:
+    """Palauta esim. '1.–7. syyskuuta 2025' tai jos eri kuukaudet: '28. syyskuuta – 4. lokakuuta 2025'."""
+    if start_date.year == end_date.year:
+        if start_date.month == end_date.month:
+            month = FI_MONTHS_GEN[end_date.month]
+            return f"{start_date.day}.–{end_date.day}. {month} {end_date.year}"
+        else:
+            m1 = FI_MONTHS_GEN[start_date.month]
+            m2 = FI_MONTHS_GEN[end_date.month]
+            return f"{start_date.day}. {m1} – {end_date.day}. {m2} {end_date.year}"
+    else:
+        # Harvinainen, mutta käsitellään siististi
+        m1 = FI_MONTHS_GEN[start_date.month]
+        m2 = FI_MONTHS_GEN[end_date.month]
+        return f"{start_date.day}. {m1} {start_date.year} – {end_date.day}. {m2} {end_date.year}"
+
+
 def build_discord_embed(podiums: List[Dict]) -> Dict:
     # Ryhmittele eventeittäin
     by_event: Dict[Tuple[str, str], List[Dict]] = {}
@@ -235,12 +260,14 @@ def build_discord_embed(podiums: List[Dict]) -> Dict:
         ])
         lines.append(f"**[{ename}]({elink})**\n{row}")
 
-    if lines:
-        desc = "\n\n".join(lines)
-        title = "RCF – Viikon podiumit (ZwiftPower)"
-    else:
-        desc = "Ei podiumeja tällä viikolla."
-        title = "RCF – Viikon podiumit"
+    # Otsikon päivämääräväli Helsingin ajassa (kuluneet 7 päivää, mukaan lukien tänään)
+    now_hki = datetime.now(TZ_HKI)
+    week_end = now_hki.date()
+    week_start = (now_hki - timedelta(days=6)).date()
+    date_range = format_finnish_date_range(week_start, week_end)
+
+    desc = "\n\n".join(lines) if lines else "Ei podiumeja tällä viikolla."
+    title = f"RCF – Viikon podiumit ({date_range})"
 
     embed = {
         "type": "rich",
