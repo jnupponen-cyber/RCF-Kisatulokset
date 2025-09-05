@@ -3,22 +3,21 @@
 """
 RCF weekly podiums (ZwiftPower) -> Discord
 
-- Hakee RCF-tiimin (ZwiftPower) tuoreet tulokset viimeisen 7 päivän ajalta
+- Hakee tiimin (ZwiftPower) tuoreet tulokset viimeisen 7 päivän ajalta
 - Suodattaa podium-sijat (1–3), ryhmittelee kisakohtaisesti
 - Postaa sunnuntai-iltana yhteenvedon Discordiin
 - Pitää "weekly_seen.json" -tiedostoa, ettei samoja podiumeja posteta uudelleen
-- DEBUG-moodi ja selkeä virheilmoitus, jos cookie ohjaa login-sivulle
-- ALWAYS_POST=1: tekee testipostauksen, vaikka podiumeja ei löytyisi
-- IGNORE-LISTA: suodata tietyt nimet pois (ignore_list.json)
-- EMOJIT: 🥇🥈🥉 podium-sijoituksiin
-- OTSIKON PÄIVÄMÄÄRÄVÄLI: esim. "1.–7. syyskuuta 2025" (Helsingin aika)
-- SATUNNAINEN ONNENTOIVOTUS: lisätään viestin loppuun
+- DEBUG tallentaa last_team_page.html ja lisää selkeät lokit
+- ALWAYS_POST=1: pakottaa postauksen (hyvä testaukseen)
+- IGNORE-lista: suodattaa nimet (ignore_list.json)
+- EMOJIT: 🥇🥈🥉
+- OTSIKKO: päivämääräväli Helsingin ajassa (esim. "1.–7. syyskuuta 2025")
+- Onnentoivotus: satunnainen loppukaneetti
 
 PÄIVITYKSET:
-- Sija regex tukee ordinaaleja (1st/2nd/3rd/…)
-- Päivämääräformaatit laajennettu (myös '04 Sep 2025' jne.)
+- Kestävämpi sijan tunnistus (data-title/class/ordinaalit + fallback)
+- Laajennettu päivämääräparseri (mm. "04 Sep 2025", "04 September 2025 18:05")
 - Viikkosuodatus päivätasolla Helsingin ajassa
-- Lisädebug: kerrotaan miksi rivi pidettiin/ohitettiin
 """
 
 from __future__ import annotations
@@ -44,7 +43,7 @@ TEAM_ID = os.environ.get("ZWIFTPOWER_TEAM_ID", "20561").strip()
 WEBHOOK = os.environ.get("DISCORD_WEBHOOK_URL", "").strip()
 COOKIE = os.environ.get("ZWIFTPOWER_COOKIE", "").strip()
 DEBUG = os.environ.get("DEBUG", "1") == "1"
-ALWAYS_POST = os.environ.get("ALWAYS_POST", "0") == "1"
+ALWAYS_POST = os.environ.get("ALWAYS_POST", "1") == "1"
 
 BASE = "https://zwiftpower.com"
 TEAM_URL = f"{BASE}/team.php?id={TEAM_ID}"
@@ -81,7 +80,7 @@ WISHES = [
     "Why ride smart when you can ride hard? 🤔"
 ]
 
-# Päivämääräformaatit laajennettuna (ZwiftPower voi käyttää kuukausien nimiä)
+# Päivämääräformaatit (ZwiftPower käyttää joskus kuukauden nimiä)
 DATE_FORMATS = (
     "%Y-%m-%d %H:%M:%S", "%d/%m/%Y %H:%M:%S",
     "%Y-%m-%d", "%d/%m/%Y",
@@ -91,9 +90,13 @@ DATE_FORMATS = (
     "%d %B %Y",        # 04 September 2025
 )
 
+# ----------------------- apulogit -----------------------
+
 def logd(*a):
     if DEBUG:
         print("[DEBUG]", *a)
+
+# ----------------------- state & ignore -----------------------
 
 def load_seen() -> Set[str]:
     if STATE_FILE.exists():
@@ -122,6 +125,8 @@ def load_ignore_names(path: Path = SCRIPT_DIR / "ignore_list.json") -> Set[str]:
     except Exception as e:
         print(f"[WARN] Failed to load ignore_list.json: {e}")
     return set()
+
+# ----------------------- verkko -----------------------
 
 def fetch(url: str) -> Optional[str]:
     headers = {
@@ -155,101 +160,137 @@ def fetch(url: str) -> Optional[str]:
 
     return text
 
+# ----------------------- parserin apurit -----------------------
+
+def _looks_like_date_text(txt: str) -> bool:
+    t = txt.strip()
+    return (
+        bool(re.search(r"\b\d{4}[-/]\d{1,2}[-/]\d{1,2}\b", t)) or
+        bool(re.search(r"\b\d{1,2}\s+[A-Za-z]{3,}\s+\d{4}\b", t))
+    )
+
+def _extract_int_anywhere(txt: str) -> Optional[int]:
+    m = re.search(r"\b(\d{1,3})(?:st|nd|rd|th)?\b", txt.strip(), re.IGNORECASE)
+    if m:
+        try:
+            val = int(m.group(1))
+            if 1 <= val <= 999:
+                return val
+        except Exception:
+            pass
+    return None
+
+def _extract_position_from_tr(tr) -> Optional[int]:
+    # 1) data-title-kenttä
+    for td in tr.find_all("td"):
+        dt = (td.get("data-title") or "").strip().lower()
+        if dt in {"pos", "position", "#", "rank"}:
+            val = _extract_int_anywhere(td.get_text(" ", strip=True))
+            if val is not None:
+                return val
+    # 2) class-vihje
+    for el in tr.select(".pos, .position, .rank"):
+        val = _extract_int_anywhere(el.get_text(" ", strip=True))
+        if val is not None:
+            return val
+    # 3) fallback: ensimmäinen pieni numero solusta, joka ei näytä päivämäärältä
+    for td in tr.find_all("td"):
+        txt = td.get_text(" ", strip=True)
+        if _looks_like_date_text(txt):
+            continue
+        val = _extract_int_anywhere(txt)
+        if val is not None:
+            return val
+    return None
+
+def _extract_date_text_from_tr(tr) -> Optional[str]:
+    # 1) data-title-kenttä
+    for td in tr.find_all("td"):
+        dt = (td.get("data-title") or "").strip().lower()
+        if dt in {"date", "event date", "time"}:
+            txt = td.get_text(" ", strip=True)
+            if txt:
+                return txt
+    # 2) fallback: ensimmäinen päivämäärältä näyttävä teksti
+    for td in tr.find_all("td"):
+        txt = td.get_text(" ", strip=True)
+        if _looks_like_date_text(txt):
+            return txt
+    return None
+
+# ----------------------- varsinainen parseri -----------------------
+
 def parse_team_results(html: str) -> List[Dict]:
     """
     Palauttaa listan tuloksista:
       { 'event': 'Event name', 'date': datetime (UTC), 'rider': 'Name', 'pos': 1,
         'category': 'B', 'link': 'https://...' }
-
-    Parsinta on tehty väljästi (ZwiftPowerin HTML voi elää).
     """
     soup = BeautifulSoup(html, "html.parser")
     results: List[Dict] = []
 
-    tables = soup.find_all("table")
-    for tbl in tables:
-        rows = tbl.find_all("tr")
-        for tr in rows:
-            tds = tr.find_all("td")
-            if len(tds) < 4:
-                continue
+    # "Rivi" kelpaa, jos siinä on sekä rider-linkki (profile.php?z=) että event-linkki (events.php)
+    for tr in soup.find_all("tr"):
+        a_event = tr.find("a", href=True)
+        a_rider = tr.find("a", href=re.compile(r"profile\.php\?z=\d+"))
+        if not a_event or "events.php" not in (a_event.get("href") or ""):
+            continue
+        if not a_rider:
+            continue
 
-            # Sija: hyväksy myös ordinaalit (1st/2nd/3rd/4th…)
-            pos: Optional[int] = None
-            for td in tds:
-                txt = td.get_text(" ", strip=True)
-                m = re.match(r"^\s*(\d+)(?:st|nd|rd|th)?\s*$", txt, re.IGNORECASE)
-                if m:
-                    try:
-                        pos = int(m.group(1))
-                        break
-                    except Exception:
-                        pass
-            if not pos:
-                logd("skip row: no numeric position found")
-                continue
+        # Sija
+        pos = _extract_position_from_tr(tr)
+        if pos is None:
+            logd("skip row: no numeric position found (robust)")
+            continue
 
-            # Päivämääräteksti
-            dt_text: Optional[str] = None
-            for td in tds:
-                txt = td.get_text(" ", strip=True)
-                # Tunnista sekä numeromuodot että kuukauden nimellä olevat
-                if (re.search(r"\b\d{4}[-/]\d{1,2}[-/]\d{1,2}", txt) or
-                    re.search(r"\b\d{1,2}\s+[A-Za-z]{3,}\s+\d{4}", txt)):
-                    dt_text = txt
-                    break
-            if not dt_text:
-                logd("skip row: no date text cell")
-                continue
+        # Päivämäärä
+        dt_text = _extract_date_text_from_tr(tr)
+        if not dt_text:
+            logd("skip row: no date text cell (robust)")
+            continue
 
-            # Event + link
-            ev_name, ev_link = None, None
-            a = tr.find("a", href=True)
-            if a and "events.php" in a["href"]:
-                ev_name = a.get_text(" ", strip=True)
-                ev_link = BASE + "/" + a["href"].lstrip("/")
-            else:
-                logd("skip row: no events.php link")
-                continue
+        # Event + link
+        ev_name = a_event.get_text(" ", strip=True)
+        ev_link = BASE + "/" + a_event["href"].lstrip("/")
 
-            # Rider
-            rider = None
-            a2 = tr.find("a", href=re.compile(r"profile\.php\?z=\d+"))
-            if a2:
-                rider = a2.get_text(" ", strip=True)
+        # Rider
+        rider = a_rider.get_text(" ", strip=True) or "Unknown"
 
-            # Category
-            cat = None
-            for td in tds:
-                m = re.search(r"\b([ABCD])\b", td.get_text(" ", strip=True))
-                if m:
-                    cat = m.group(1)
-                    break
+        # Category (heuristiikka: A/B/C/D jossain solussa)
+        cat = None
+        for td in tr.find_all("td"):
+            m = re.search(r"\b([ABCD])\b", td.get_text(" ", strip=True))
+            if m:
+                cat = m.group(1)
+                break
 
-            # Päiväyksen parserointi -> UTC
-            when = None
-            for fmt in DATE_FORMATS:
-                try:
-                    when = datetime.strptime(dt_text, fmt).replace(tzinfo=timezone.utc)
-                    break
-                except Exception:
-                    pass
-            if not when:
-                logd(f"skip row: unparsed date '{dt_text}'")
-                continue
+        # Päiväyksen parserointi -> UTC
+        when = None
+        for fmt in DATE_FORMATS:
+            try:
+                when = datetime.strptime(dt_text.strip(), fmt).replace(tzinfo=timezone.utc)
+                break
+            except Exception:
+                pass
+        if not when:
+            logd(f"skip row: unparsed date '{dt_text}'")
+            continue
 
-            results.append(
-                {
-                    "event": ev_name,
-                    "date": when,
-                    "rider": rider or "Unknown",
-                    "pos": pos,
-                    "category": cat or "?",
-                    "link": ev_link,
-                }
-            )
+        results.append(
+            {
+                "event": ev_name,
+                "date": when,
+                "rider": rider,
+                "pos": pos,
+                "category": cat or "?",
+                "link": ev_link,
+            }
+        )
 
     return results
+
+# ----------------------- formatointi & Discord -----------------------
 
 def format_finnish_date_range(start_date, end_date) -> str:
     if start_date.year == end_date.year:
@@ -310,6 +351,8 @@ def post_to_discord(embed: Dict) -> None:
     r = requests.post(WEBHOOK, json=payload, timeout=REQUEST_TIMEOUT)
     if r.status_code >= 300:
         raise RuntimeError(f"Discord POST failed: {r.status_code} {r.text}")
+
+# ----------------------- main -----------------------
 
 def main() -> None:
     if not COOKIE:
