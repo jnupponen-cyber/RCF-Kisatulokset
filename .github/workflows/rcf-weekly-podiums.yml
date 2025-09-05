@@ -19,10 +19,17 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+- name: Install dependencies
+  run: |
+    python -m pip install --upgrade pip
+    if [ -f requirements.txt ]; then
+      pip install -r requirements.txt
+    elif [ -f ../requirements.txt ]; then
+      pip install -r ../requirements.txt
+    else
+      # weekly_podiums.py tarvitsee nämä:
+      pip install requests beautifulsoup4
+    fi
 
       - name: Run weekly podiums script
         env:
@@ -30,4 +37,3 @@ jobs:
           ZWIFTPOWER_COOKIE: ${{ secrets.ZWIFTPOWER_COOKIE }}
         run: |
           python weekly_podiums.py
-
