@@ -34,7 +34,7 @@ jobs:
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           ZWIFTPOWER_COOKIE: ${{ secrets.ZWIFTPOWER_COOKIE }}
-          ZWIFTPOWER_TEAM_ID: "20561"
+          ZWIFTPOWER_TEAM_ID: "16553"
           DEBUG: "1"   # halutessasi poista tai vaihda "0"
         run: |
           python weekly_podiums.py
