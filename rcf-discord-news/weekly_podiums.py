@@ -63,6 +63,15 @@ WISHES = [
     "Well, nobody’s perfect. 🙃"
     "I guess practice does make perfect! 📈"
     "We are the champions, my friends! 🏆"
+    "Second place is just the first loser. 😏",
+    "Go hard or go home... well, see you at home then! 🛋️",
+    "If you can’t win fair, draft better! 🚴‍♂️💨",
+    "Podium today, excuses tomorrow. 🤷",
+    "Winning isn’t everything… it’s just highly recommended. 😉",
+    "No watts, no glory. ⚡",
+    "It’s not about how you start, it’s about how you blame the trainer. 🔧",
+    "Legs are temporary, pride is permanent. 💪",
+    "Why ride smart when you can ride hard? 🤔"
 ]
 
 def logd(*a):
