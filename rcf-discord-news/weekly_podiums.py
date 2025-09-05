@@ -6,13 +6,19 @@ RCF weekly podiums (ZwiftPower) -> Discord
 - Hakee RCF-tiimin (ZwiftPower) tuoreet tulokset viimeisen 7 päivän ajalta
 - Suodattaa podium-sijat (1–3), ryhmittelee kisakohtaisesti
 - Postaa sunnuntai-iltana yhteenvedon Discordiin
-- Pitää "weekly_seen.json" -tiedostoa, ettei samoja podiumeja postata uudelleen
+- Pitää "weekly_seen.json" -tiedostoa, ettei samoja podiumeja posteta uudelleen
 - DEBUG-moodi ja selkeä virheilmoitus, jos cookie ohjaa login-sivulle
 - ALWAYS_POST=1: tekee testipostauksen, vaikka podiumeja ei löytyisi
 - IGNORE-LISTA: suodata tietyt nimet pois (ignore_list.json)
 - EMOJIT: 🥇🥈🥉 podium-sijoituksiin
 - OTSIKON PÄIVÄMÄÄRÄVÄLI: esim. "1.–7. syyskuuta 2025" (Helsingin aika)
 - SATUNNAINEN ONNENTOIVOTUS: lisätään viestin loppuun
+
+PÄIVITYKSET:
+- Sija regex tukee ordinaaleja (1st/2nd/3rd/…)
+- Päivämääräformaatit laajennettu (myös '04 Sep 2025' jne.)
+- Viikkosuodatus päivätasolla Helsingin ajassa
+- Lisädebug: kerrotaan miksi rivi pidettiin/ohitettiin
 """
 
 from __future__ import annotations
@@ -38,7 +44,7 @@ TEAM_ID = os.environ.get("ZWIFTPOWER_TEAM_ID", "20561").strip()
 WEBHOOK = os.environ.get("DISCORD_WEBHOOK_URL", "").strip()
 COOKIE = os.environ.get("ZWIFTPOWER_COOKIE", "").strip()
 DEBUG = os.environ.get("DEBUG", "1") == "1"
-ALWAYS_POST = os.environ.get("ALWAYS_POST", "1") == "1"
+ALWAYS_POST = os.environ.get("ALWAYS_POST", "0") == "1"
 
 BASE = "https://zwiftpower.com"
 TEAM_URL = f"{BASE}/team.php?id={TEAM_ID}"
@@ -50,6 +56,7 @@ FI_MONTHS_GEN = [
     "kesäkuuta", "heinäkuuta", "elokuuta", "syyskuuta", "lokakuuta", "marraskuuta", "joulukuuta"
 ]
 
+# Satunnaiset onnentoivotukset
 WISHES = [
     "Hyvää treeniviikkoa kaikille! 🚴‍♂️💨",
     "Onnea podium-sijoituksista ja tsemppiä ensi viikkoon! 🔥",
@@ -74,10 +81,19 @@ WISHES = [
     "Why ride smart when you can ride hard? 🤔"
 ]
 
+# Päivämääräformaatit laajennettuna (ZwiftPower voi käyttää kuukausien nimiä)
+DATE_FORMATS = (
+    "%Y-%m-%d %H:%M:%S", "%d/%m/%Y %H:%M:%S",
+    "%Y-%m-%d", "%d/%m/%Y",
+    "%d %b %Y %H:%M",   # 04 Sep 2025 18:05
+    "%d %b %Y",        # 04 Sep 2025
+    "%d %B %Y %H:%M",  # 04 September 2025 18:05
+    "%d %B %Y",        # 04 September 2025
+)
+
 def logd(*a):
     if DEBUG:
         print("[DEBUG]", *a)
-
 
 def load_seen() -> Set[str]:
     if STATE_FILE.exists():
@@ -88,7 +104,6 @@ def load_seen() -> Set[str]:
             print(f"[WARN] Failed to read {STATE_FILE.name}: {e}")
     return set()
 
-
 def save_seen(s: Set[str]) -> None:
     try:
         STATE_FILE.write_text(
@@ -97,7 +112,6 @@ def save_seen(s: Set[str]) -> None:
         )
     except Exception as e:
         print(f"[WARN] Failed to write {STATE_FILE.name}: {e}")
-
 
 def load_ignore_names(path: Path = SCRIPT_DIR / "ignore_list.json") -> Set[str]:
     try:
@@ -108,7 +122,6 @@ def load_ignore_names(path: Path = SCRIPT_DIR / "ignore_list.json") -> Set[str]:
     except Exception as e:
         print(f"[WARN] Failed to load ignore_list.json: {e}")
     return set()
-
 
 def fetch(url: str) -> Optional[str]:
     headers = {
@@ -133,7 +146,7 @@ def fetch(url: str) -> Optional[str]:
         print("[ERROR] ZwiftPower returned login page -> cookie invalid/expired.")
         return None
 
-    if DEBUG:
+    if DEBUG and "team.php" in url:
         try:
             (SCRIPT_DIR / "last_team_page.html").write_text(text, encoding="utf-8")
             logd("Saved last_team_page.html for inspection.")
@@ -142,8 +155,14 @@ def fetch(url: str) -> Optional[str]:
 
     return text
 
-
 def parse_team_results(html: str) -> List[Dict]:
+    """
+    Palauttaa listan tuloksista:
+      { 'event': 'Event name', 'date': datetime (UTC), 'rider': 'Name', 'pos': 1,
+        'category': 'B', 'link': 'https://...' }
+
+    Parsinta on tehty väljästi (ZwiftPowerin HTML voi elää).
+    """
     soup = BeautifulSoup(html, "html.parser")
     results: List[Dict] = []
 
@@ -155,9 +174,11 @@ def parse_team_results(html: str) -> List[Dict]:
             if len(tds) < 4:
                 continue
 
+            # Sija: hyväksy myös ordinaalit (1st/2nd/3rd/4th…)
             pos: Optional[int] = None
             for td in tds:
-                m = re.match(r"^\s*(\d+)\s*$", td.get_text(" ", strip=True))
+                txt = td.get_text(" ", strip=True)
+                m = re.match(r"^\s*(\d+)(?:st|nd|rd|th)?\s*$", txt, re.IGNORECASE)
                 if m:
                     try:
                         pos = int(m.group(1))
@@ -165,30 +186,39 @@ def parse_team_results(html: str) -> List[Dict]:
                     except Exception:
                         pass
             if not pos:
+                logd("skip row: no numeric position found")
                 continue
 
+            # Päivämääräteksti
             dt_text: Optional[str] = None
             for td in tds:
                 txt = td.get_text(" ", strip=True)
-                if re.search(r"\d{4}[-/]\d{1,2}[-/]\d{1,2}", txt):
+                # Tunnista sekä numeromuodot että kuukauden nimellä olevat
+                if (re.search(r"\b\d{4}[-/]\d{1,2}[-/]\d{1,2}", txt) or
+                    re.search(r"\b\d{1,2}\s+[A-Za-z]{3,}\s+\d{4}", txt)):
                     dt_text = txt
                     break
             if not dt_text:
+                logd("skip row: no date text cell")
                 continue
 
+            # Event + link
             ev_name, ev_link = None, None
             a = tr.find("a", href=True)
             if a and "events.php" in a["href"]:
                 ev_name = a.get_text(" ", strip=True)
                 ev_link = BASE + "/" + a["href"].lstrip("/")
             else:
+                logd("skip row: no events.php link")
                 continue
 
+            # Rider
             rider = None
             a2 = tr.find("a", href=re.compile(r"profile\.php\?z=\d+"))
             if a2:
                 rider = a2.get_text(" ", strip=True)
 
+            # Category
             cat = None
             for td in tds:
                 m = re.search(r"\b([ABCD])\b", td.get_text(" ", strip=True))
@@ -196,14 +226,16 @@ def parse_team_results(html: str) -> List[Dict]:
                     cat = m.group(1)
                     break
 
+            # Päiväyksen parserointi -> UTC
             when = None
-            for fmt in ("%Y-%m-%d %H:%M:%S", "%d/%m/%Y %H:%M:%S", "%Y-%m-%d", "%d/%m/%Y"):
+            for fmt in DATE_FORMATS:
                 try:
                     when = datetime.strptime(dt_text, fmt).replace(tzinfo=timezone.utc)
                     break
                 except Exception:
                     pass
             if not when:
+                logd(f"skip row: unparsed date '{dt_text}'")
                 continue
 
             results.append(
@@ -219,7 +251,6 @@ def parse_team_results(html: str) -> List[Dict]:
 
     return results
 
-
 def format_finnish_date_range(start_date, end_date) -> str:
     if start_date.year == end_date.year:
         if start_date.month == end_date.month:
@@ -234,8 +265,8 @@ def format_finnish_date_range(start_date, end_date) -> str:
         m2 = FI_MONTHS_GEN[end_date.month]
         return f"{start_date.day}. {m1} {start_date.year} – {end_date.day}. {m2} {end_date.year}"
 
-
 def build_discord_embed(podiums: List[Dict]) -> Dict:
+    # Ryhmittele eventeittäin
     by_event: Dict[Tuple[str, str], List[Dict]] = {}
     for r in podiums:
         by_event.setdefault((r["event"], r["link"]), []).append(r)
@@ -250,6 +281,7 @@ def build_discord_embed(podiums: List[Dict]) -> Dict:
         ])
         lines.append(f"**[{ename}]({elink})**\n{row}")
 
+    # Otsikon päivämääräväli Helsingin ajassa (kuluneet 7 päivää päivätasolla)
     now_hki = datetime.now(TZ_HKI)
     week_end = now_hki.date()
     week_start = (now_hki - timedelta(days=6)).date()
@@ -271,7 +303,6 @@ def build_discord_embed(podiums: List[Dict]) -> Dict:
     }
     return embed
 
-
 def post_to_discord(embed: Dict) -> None:
     if not WEBHOOK:
         raise RuntimeError("DISCORD_WEBHOOK_URL puuttuu.")
@@ -279,7 +310,6 @@ def post_to_discord(embed: Dict) -> None:
     r = requests.post(WEBHOOK, json=payload, timeout=REQUEST_TIMEOUT)
     if r.status_code >= 300:
         raise RuntimeError(f"Discord POST failed: {r.status_code} {r.text}")
-
 
 def main() -> None:
     if not COOKIE:
@@ -294,29 +324,41 @@ def main() -> None:
     all_results = parse_team_results(html)
     logd("parsed results:", len(all_results))
 
-    now = datetime.now(timezone.utc)
-    week_ago = now - timedelta(days=7)
+    # Viikkorajat Helsingin ajassa (päivämuodossa)
+    now_hki = datetime.now(TZ_HKI)
+    week_end = now_hki.date()
+    week_start = (now_hki - timedelta(days=6)).date()
+
+    def in_week_hki(dt_utc: datetime) -> bool:
+        d = dt_utc.astimezone(TZ_HKI).date()
+        return week_start <= d <= week_end
 
     seen = load_seen()
     ignore_names = load_ignore_names()
     if DEBUG:
         logd("ignore_names:", sorted(ignore_names))
+        logd(f"week window (Helsinki): {week_start} .. {week_end}")
 
     podiums: List[Dict] = []
     new_ids: Set[str] = set()
 
     for r in all_results:
-        if r["date"] < week_ago:
+        if not in_week_hki(r["date"]):
+            logd(f"skip out-of-week: {r['event']} | {r['date'].isoformat()}")
             continue
         if r["pos"] > 3:
+            logd(f"skip pos>3: {r['event']} #{r['pos']}")
             continue
         if r["rider"] in ignore_names:
+            logd(f"skip ignored rider: {r['rider']}")
             continue
 
         uid = f"{r['link']}|{r['rider']}|{r['pos']}|{r['date'].isoformat()}"
         if uid in seen:
+            logd(f"skip already seen: {uid}")
             continue
 
+        logd(f"keeping: {r['event']} | #{r['pos']} {r['rider']} | {r['date'].isoformat()}")
         podiums.append(r)
         new_ids.add(uid)
 
@@ -335,7 +377,6 @@ def main() -> None:
         print("[INFO] Posted weekly podiums to Discord.")
     else:
         print("[INFO] No new podiums to post this week.")
-
 
 if __name__ == "__main__":
     main()
