@@ -3,7 +3,7 @@ name: RCF Weekly Podiums
 on:
   workflow_dispatch:       # Manuaalinen käynnistys
   schedule:
-    - cron: "0 17 * * 0"   # Sunnuntai 20:00 Suomen aikaa (kesäaika), cron on UTC
+    - cron: "0 17 * * 0"   # Sunnuntai 17:00 UTC = klo 20:00 Suomessa (kesäaika)
 
 permissions:
   contents: write
@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: rcf-discord-news
+        working-directory: rcf-discord-news   # Missä weekly_podiums.py sijaitsee
 
     steps:
       - name: Checkout
@@ -30,12 +30,21 @@ jobs:
             pip install requests beautifulsoup4
           fi
 
+      - name: Webhook smoke test
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          curl -sS -X POST -H "Content-Type: application/json" \
+            -d '{"content":"RCF Weekly Podiums: webhook OK ✅ (smoke test)"}' \
+            "$DISCORD_WEBHOOK_URL"
+
       - name: Run weekly podiums script
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           ZWIFTPOWER_COOKIE: ${{ secrets.ZWIFTPOWER_COOKIE }}
           ZWIFTPOWER_TEAM_ID: "20561"
           DEBUG: "1"
+          ALWAYS_POST: "1"   # ← jätä tämä vain testiajoihin; poista kun kaikki toimii
         run: |
           python weekly_podiums.py
 
@@ -50,12 +59,3 @@ jobs:
           else
             echo "No changes to commit"
           fi
-
-# .github/workflows/rcf-weekly-podiums.yml
-
-- name: Webhook smoke test
-  env:
-    DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-  run: |
-    curl -sS -X POST -H "Content-Type: application/json" \
-      -d '{"content":"RCF Weekly Podiums: webhook OK ✅ (smoke test)"}' "$DISCORD_WEBHOOK_URL"
