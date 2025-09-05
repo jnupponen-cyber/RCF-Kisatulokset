@@ -44,8 +44,6 @@ jobs:
           ZWIFTPOWER_COOKIE: ${{ secrets.ZWIFTPOWER_COOKIE }}
           ZWIFTPOWER_TEAM_ID: "20561"
           DEBUG: "1"
-          ALWAYS_POST: "1"   # ← jätä tämä vain testiajoihin; poista kun kaikki toimii
-        run: |
           python weekly_podiums.py
 
       - name: Commit weekly_seen.json if changed
