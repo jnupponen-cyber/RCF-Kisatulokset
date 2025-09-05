@@ -9,6 +9,7 @@ RCF weekly podiums (ZwiftPower) -> Discord
 - Pitää "weekly_seen.json" -tiedostoa, ettei samoja podiumeja postata uudelleen
 - DEBUG-moodi ja selkeä virheilmoitus, jos cookie ohjaa login-sivulle
 - ALWAYS_POST=1: tekee testipostauksen, vaikka podiumeja ei löytyisi
+- IGNORE-LISTA: suodata tietyt nimet pois (ignore_list.json)
 
 ENV (GitHub Actions → Secrets / env):
   DISCORD_WEBHOOK_URL  (pakollinen)
@@ -18,11 +19,14 @@ ENV (GitHub Actions → Secrets / env):
   ALWAYS_POST          ("1" pakottaa postauksen testissä)
 """
 
+from __future__ import annotations
+
 import os
 import re
 import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import List, Dict, Set, Tuple, Optional
 
 import requests
 from bs4 import BeautifulSoup
@@ -47,23 +51,46 @@ def logd(*a):
         print("[DEBUG]", *a)
 
 
-def load_seen():
+def load_seen() -> Set[str]:
     if STATE_FILE.exists():
         try:
-            return set(json.loads(STATE_FILE.read_text(encoding="utf-8")))
-        except Exception:
-            pass
+            data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+            return set(data if isinstance(data, list) else [])
+        except Exception as e:
+            print(f"[WARN] Failed to read {STATE_FILE.name}: {e}")
     return set()
 
 
-def save_seen(s):
-    STATE_FILE.write_text(
-        json.dumps(sorted(list(s)), ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+def save_seen(s: Set[str]) -> None:
+    try:
+        STATE_FILE.write_text(
+            json.dumps(sorted(list(s)), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except Exception as e:
+        print(f"[WARN] Failed to write {STATE_FILE.name}: {e}")
 
 
-def fetch(url: str) -> str | None:
+def load_ignore_names(path: Path = SCRIPT_DIR / "ignore_list.json") -> Set[str]:
+    """
+    Lataa ignoorattavat nimet. Jos tiedosto puuttuu tai on rikki, palauttaa tyhjän joukon.
+    Muoto:
+    {
+      "ignore": ["Etunimi Sukunimi", "Rider Nickname"]
+    }
+    """
+    try:
+        if path.exists():
+            data = json.loads(path.read_text(encoding="utf-8"))
+            ignore = set(map(str.strip, data.get("ignore", [])))
+            names = {n for n in ignore if n}
+            return names
+    except Exception as e:
+        print(f"[WARN] Failed to load ignore_list.json: {e}")
+    return set()
+
+
+def fetch(url: str) -> Optional[str]:
     headers = {
         "User-Agent": "RCF Podiums Bot",
         "Accept": "text/html,application/xhtml+xml",
@@ -76,6 +103,11 @@ def fetch(url: str) -> str | None:
         print(f"[WARN] ZwiftPower HTTP {r.status_code} for {url}")
         return None
 
+    # Diagnoosi: näytä mahdolliset uudet Set-Cookie -headerit
+    sc = r.headers.get("Set-Cookie")
+    if sc:
+        logd("response Set-Cookie:", sc)
+
     text = r.text or ""
     low = text.lower()
 
@@ -84,24 +116,29 @@ def fetch(url: str) -> str | None:
         print("[ERROR] ZwiftPower returned login page -> cookie invalid/expired.")
         return None
 
-    # Jos ohjattiin muualle (esim. 302 login), paluupuolella login-sivu näkyy myös
-    if "set-cookie" in (r.headers or {}):
-        logd("response Set-Cookie:", r.headers.get("set-cookie"))
+    # Tallenna viimeisin HTML debugia varten
+    if DEBUG:
+        try:
+            (SCRIPT_DIR / "last_team_page.html").write_text(text, encoding="utf-8")
+            logd("Saved last_team_page.html for inspection.")
+        except Exception as e:
+            print(f"[WARN] Could not write last_team_page.html: {e}")
 
     return text
 
 
-def parse_team_results(html: str) -> list[dict]:
+def parse_team_results(html: str) -> List[Dict]:
     """
     Palauttaa listan tuloksista:
-      { 'event': 'Event name', 'date': datetime, 'rider': 'Name', 'pos': 1,
+      { 'event': 'Event name', 'date': datetime (UTC), 'rider': 'Name', 'pos': 1,
         'category': 'B', 'link': 'https://...' }
 
     Parsinta on tehty väljästi (ZwiftPowerin HTML voi elää).
     """
     soup = BeautifulSoup(html, "html.parser")
-    results = []
+    results: List[Dict] = []
 
+    # Yritetään löytää kaikki taulukot, joissa voisi olla tulosrivejä
     tables = soup.find_all("table")
     for tbl in tables:
         rows = tbl.find_all("tr")
@@ -110,8 +147,8 @@ def parse_team_results(html: str) -> list[dict]:
             if len(tds) < 4:
                 continue
 
-            # Position (sija)
-            pos = None
+            # Position (sija) – etsitään solu, jossa pelkkä numero
+            pos: Optional[int] = None
             for td in tds:
                 m = re.match(r"^\s*(\d+)\s*$", td.get_text(" ", strip=True))
                 if m:
@@ -123,8 +160,8 @@ def parse_team_results(html: str) -> list[dict]:
             if not pos:
                 continue
 
-            # Date
-            dt_text = None
+            # Päivämäärä
+            dt_text: Optional[str] = None
             for td in tds:
                 txt = td.get_text(" ", strip=True)
                 if re.search(r"\d{4}[-/]\d{1,2}[-/]\d{1,2}", txt):
@@ -156,7 +193,7 @@ def parse_team_results(html: str) -> list[dict]:
                     cat = m.group(1)
                     break
 
-            # Päiväyksen parserointi
+            # Päiväyksen parserointi -> UTC
             when = None
             for fmt in ("%Y-%m-%d %H:%M:%S", "%d/%m/%Y %H:%M:%S", "%Y-%m-%d", "%d/%m/%Y"):
                 try:
@@ -181,13 +218,13 @@ def parse_team_results(html: str) -> list[dict]:
     return results
 
 
-def build_discord_embed(podiums: list[dict]) -> dict:
+def build_discord_embed(podiums: List[Dict]) -> Dict:
     # Ryhmittele eventeittäin
-    by_event = {}
+    by_event: Dict[Tuple[str, str], List[Dict]] = {}
     for r in podiums:
         by_event.setdefault((r["event"], r["link"]), []).append(r)
 
-    lines = []
+    lines: List[str] = []
     for (ename, elink), items in sorted(by_event.items(), key=lambda x: x[0][0].lower()):
         items_sorted = sorted(items, key=lambda r: r["pos"])
         row = "\n".join([f"#{it['pos']} — {it['rider']} (Cat {it['category']})" for it in items_sorted])
@@ -203,7 +240,7 @@ def build_discord_embed(podiums: list[dict]) -> dict:
     embed = {
         "type": "rich",
         "title": title,
-        "description": desc[:3900],
+        "description": desc[:3900],  # Discordin embed raja
         "color": int("0x00BC8C", 16),
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "footer": {"text": "Ride Club Finland"},
@@ -211,7 +248,7 @@ def build_discord_embed(podiums: list[dict]) -> dict:
     return embed
 
 
-def post_to_discord(embed: dict):
+def post_to_discord(embed: Dict) -> None:
     if not WEBHOOK:
         raise RuntimeError("DISCORD_WEBHOOK_URL puuttuu.")
     payload = {"embeds": [embed]}
@@ -220,7 +257,7 @@ def post_to_discord(embed: dict):
         raise RuntimeError(f"Discord POST failed: {r.status_code} {r.text}")
 
 
-def main():
+def main() -> None:
     if not COOKIE:
         raise SystemExit("ZWIFTPOWER_COOKIE puuttuu (kirjautuneen istunnon cookie).")
 
@@ -237,13 +274,19 @@ def main():
     week_ago = now - timedelta(days=7)
 
     seen = load_seen()
-    podiums = []
-    new_ids = set()
+    ignore_names = load_ignore_names()
+    if DEBUG:
+        logd("ignore_names:", sorted(ignore_names))
+
+    podiums: List[Dict] = []
+    new_ids: Set[str] = set()
 
     for r in all_results:
         if r["date"] < week_ago:
             continue
         if r["pos"] > 3:
+            continue
+        if r["rider"] in ignore_names:
             continue
 
         uid = f"{r['link']}|{r['rider']}|{r['pos']}|{r['date'].isoformat()}"
@@ -257,7 +300,11 @@ def main():
 
     if podiums or ALWAYS_POST:
         embed = build_discord_embed(podiums)
-        post_to_discord(embed)
+        try:
+            post_to_discord(embed)
+        except Exception as e:
+            print(f"[ERROR] {e}")
+            return
         if podiums:
             seen |= new_ids
             save_seen(seen)
@@ -268,18 +315,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-import json
-
-# Lataa ignore-lista
-with open("ignore_list.json", "r", encoding="utf-8") as f:
-    ignore_data = json.load(f)
-IGNORE_NAMES = set(ignore_data["ignore"])
-
-...
-
-for result in podium_results:
-    rider_name = result["name"]
-    if rider_name in IGNORE_NAMES:
-        continue  # ohitetaan tämä nimi
-    # muuten lisätään Discord-viestiin
