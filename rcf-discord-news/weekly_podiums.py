@@ -268,3 +268,18 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+import json
+
+# Lataa ignore-lista
+with open("ignore_list.json", "r", encoding="utf-8") as f:
+    ignore_data = json.load(f)
+IGNORE_NAMES = set(ignore_data["ignore"])
+
+...
+
+for result in podium_results:
+    rider_name = result["name"]
+    if rider_name in IGNORE_NAMES:
+        continue  # ohitetaan tämä nimi
+    # muuten lisätään Discord-viestiin
